@@ -40,6 +40,14 @@ TZ_OFFSET = 2 * 3600  # displayed clock offset from UTC (Europe/Paris summer)
 BASE = "EUR"
 QUOTE = "USD"
 
+# Pair menu. The left button (refresh) fetches the next entry, so a press on
+# EUR/USD moves the dashboard to EUR/JPY. Boot starts on BASE/QUOTE when it is
+# listed here, otherwise on the first entry. One entry = plain refresh, no menu.
+PAIRS = (
+    ("EUR", "USD"),
+    ("EUR", "JPY"),
+)
+
 HISTORY_DAYS = 45  # window requested for the sparkline
 REFRESH_SECONDS = 300  # ECB publishes once a day, 5 min is plenty
 RETRY_SECONDS = 30  # after a failed fetch

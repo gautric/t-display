@@ -1,6 +1,7 @@
 """EUR/JPY dashboard for the LilyGO T-Display S3 family.
 
-Left button  (GPIO0 / BOOT) : force a refresh
+Left button  (GPIO0 / BOOT) : refresh, moving to the next pair in config.PAIRS
+                              (EUR/USD -> EUR/JPY -> ...)
 Right button (GPIO21 or 14) : cycle brightness
 
 Progress is logged to the USB serial console; watch it with `make monitor`, or
@@ -24,13 +25,30 @@ TAG = "main"
 BRIGHTNESS_STEPS = (0xFF, 0xD0, 0x80, 0x30, 0x08)
 
 
-def _pair():
+def _menu():
+    """The pair menu, normalised to a tuple of (base, quote)."""
+    pairs = getattr(config, "PAIRS", None) or ((config.BASE, config.QUOTE),)
+    return tuple((str(b).upper(), str(q).upper()) for b, q in pairs)
+
+
+def _start_index(menu):
+    """Boot on config.BASE/QUOTE when the menu lists it, else on the first."""
+    try:
+        return menu.index((config.BASE.upper(), config.QUOTE.upper()))
+    except ValueError:
+        return 0
+
+
+def _pair(state=None):
+    """'EUR/JPY' for the selected pair, or for the configured default."""
+    if state:
+        return "%s/%s" % (state["base"], state["quote_ccy"])
     return "%s/%s" % (config.BASE, config.QUOTE)
 
 
-def _banner():
-    log.info(TAG, "%s dashboard starting, log level %s", _pair(),
-             log.level_name())
+def _banner(menu, index):
+    log.info(TAG, "%s/%s dashboard starting, log level %s", menu[index][0],
+             menu[index][1], log.level_name())
     try:
         import os
         uname = os.uname()
@@ -40,19 +58,21 @@ def _banner():
         pass
     log.info(TAG, "board %s, rotation %d, refresh %ds", config.BOARD,
              config.ROTATION, config.REFRESH_SECONDS)
+    log.info(TAG, "pair menu: %s", ", ".join("%s/%s" % p for p in menu))
     log.mem(TAG, "at boot")
 
 
 def _fetch(state):
-    """Refresh the quote in place."""
+    """Refresh the quote of the selected pair in place."""
+    base = state["base"]
+    quote_ccy = state["quote_ccy"]
     wifi.ensure(config.WIFI_SSID, config.WIFI_PASSWORD, config.WIFI_TIMEOUT,
                 config.WIFI_HOSTNAME)
-    quote = fx.fetch(httpget.get_json, config.BASE, config.QUOTE,
-                     config.HISTORY_DAYS)
+    quote = fx.fetch(httpget.get_json, base, quote_ccy, config.HISTORY_DAYS)
     state["quote"] = quote
     state["error"] = None
-    log.info(TAG, "%s = %s %s, %s, %d history points", _pair(),
-             fx.format_rate(quote["rate"]), config.QUOTE,
+    log.info(TAG, "%s/%s = %s %s, %s, %d history points", base, quote_ccy,
+             fx.format_rate(quote["rate"]), quote_ccy,
              fx.format_change(quote) or "no change data",
              len(quote["series"]))
     return quote
@@ -60,17 +80,20 @@ def _fetch(state):
 
 def main():
     log.configure(config.LOG_LEVEL)
-    _banner()
+    menu = _menu()
+    index = _start_index(menu)
+    base, quote_ccy = menu[index]
+    _banner(menu, index)
 
     display = make_display(config)
     screen = Screen(display, config.BAND_HEIGHT)
-    dash = Dashboard(screen.width, screen.height, config.BASE, config.QUOTE,
-                     config.TZ_OFFSET)
+    dash = Dashboard(screen.width, screen.height, base, quote_ccy,
+                     config.TZ_OFFSET, len(menu), index)
     state = {"quote": None, "error": None, "ip": None, "rssi": None,
-             "refresh_fraction": 0.0}
+             "refresh_fraction": 0.0, "base": base, "quote_ccy": quote_ccy}
     log.mem(TAG, "after display init")
 
-    screen.render(lambda p: dash.splash(p, _pair(),
+    screen.render(lambda p: dash.splash(p, _pair(state),
                                        "joining %s" % config.WIFI_SSID))
     try:
         wifi.connect(config.WIFI_SSID, config.WIFI_PASSWORD,
@@ -108,7 +131,7 @@ def main():
     while True:
         if time.ticks_diff(time.ticks_ms(), due) >= 0:
             cycle += 1
-            log.debug(TAG, "refresh cycle %d", cycle)
+            log.debug(TAG, "refresh cycle %d, %s", cycle, _pair(state))
             screen.render(lambda p: dash.draw(p, _busy(state)))
             try:
                 _fetch(state)
@@ -132,7 +155,16 @@ def main():
         deadline = time.ticks_add(time.ticks_ms(), config.TICK_SECONDS * 1000)
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             if not key_a.value():
-                log.info(TAG, "refresh button pressed")
+                index = (index + 1) % len(menu)
+                state["base"], state["quote_ccy"] = menu[index]
+                dash.set_pair(state["base"], state["quote_ccy"], index,
+                              len(menu))
+                # drop the previous pair's numbers, they no longer match the
+                # header, the next cycle repopulates them
+                state["quote"] = None
+                state["error"] = None
+                log.info(TAG, "refresh button pressed, pair %d/%d is now %s",
+                         index + 1, len(menu), _pair(state))
                 due = time.ticks_ms()
                 while not key_a.value():
                     time.sleep_ms(20)

@@ -1,4 +1,8 @@
-"""Dashboard layout.
+"""Dashboard chrome: header, footer, splash.
+
+The quote readout itself lives in tradeview.TradeView; this module frames it
+with the pair label + menu indicator, the clock, the Wi-Fi bars, the status
+line and the countdown to the next refresh.
 
 All geometry is derived from the panel size, so the same code lays out the
 536x240 AMOLED and the 320x170 LCD. Coordinates are screen-absolute; the
@@ -8,17 +12,21 @@ Painter handed to draw() takes care of the band offset.
 import time
 import gfx
 import fx
+from tradeview import TradeView
 
 _UNSET = "--:--"
 
 
 class Dashboard:
-    def __init__(self, width, height, base="EUR", quote="JPY", tz_offset=0):
+    def __init__(self, width, height, base="EUR", quote="JPY", tz_offset=0,
+                 pair_count=1, pair_index=0):
         self.w = width
         self.h = height
         self.base = base
         self.quote = quote
         self.tz = tz_offset
+        self.pair_count = pair_count
+        self.pair_index = pair_index
 
         k = height / 240.0
         self.k = k
@@ -27,18 +35,12 @@ class Dashboard:
 
         self.pad = max(6, int(10 * k))
         self.s_head = 2 if wide else 1
-        self.s_body = 2 if wide else 1
-        self.s_unit = 3 if wide else 2
 
         self.head_h = int(30 * k)
-        self.y_big = int(38 * k)
-        self.h_big = int(84 * k)
-        self.y_change = int(130 * k)
-        self.y_inverse = int(154 * k)
-        self.y_spark = int(178 * k)
-        self.h_spark = int(42 * k)
         self.y_foot = height - int(4 * k) - 10
         self.y_bar = height - 2
+
+        self.trade = TradeView(width, height, base, quote, self.pad)
 
     # ------------------------------------------------------------- helpers --
     def _right(self, text, scale):
@@ -51,16 +53,46 @@ class Dashboard:
         tm = time.localtime(now + self.tz)
         return "%02d:%02d" % (tm[3], tm[4])
 
+    def pair(self):
+        return "%s/%s" % (self.base, self.quote)
+
+    def set_pair(self, base, quote, index=None, count=None):
+        """Point the dashboard at another pair from the menu."""
+        self.base = base
+        self.quote = quote
+        if index is not None:
+            self.pair_index = index
+        if count is not None:
+            self.pair_count = count
+        self.trade.set_pair(base, quote)
+
     # -------------------------------------------------------------- header --
+    def _menu_dots(self, p, x, y):
+        """One dot per pair in the menu, the selected one filled."""
+        if self.pair_count < 2:
+            return 0
+        r = max(2, int(3 * self.k))
+        gap = r + max(2, int(3 * self.k))
+        step = 2 * r + gap
+        for i in range(self.pair_count):
+            cx = x + i * step
+            color = gfx.CYAN if i == self.pair_index else gfx.DARK
+            p.fill_rect(cx, y, 2 * r, 2 * r, color)
+        return self.pair_count * step - gap
+
     def _header(self, p, state):
         pad = self.pad
         s = self.s_head
-        pair = "%s/%s" % (self.base, self.quote)
-        p.text(pair, pad, (self.head_h - 8 * s) // 2, gfx.WHITE, s)
+        pair = self.pair()
+        ty = (self.head_h - 8 * s) // 2
+        p.text(pair, pad, ty, gfx.WHITE, s)
+
+        dots_x = pad + gfx.text_width(pair, s) + int(10 * self.k)
+        dots_w = self._menu_dots(p, dots_x, ty + 4 * s - max(2, int(3 * self.k)))
 
         clock = self._clock()
         cx = self._right(clock, s)
-        p.text(clock, cx, (self.head_h - 8 * s) // 2, gfx.GREY, s)
+        p.text(clock, cx, ty, gfx.GREY, s)
 
         level = gfx.rssi_level(state.get("rssi")) if state.get("ip") else 0
         bar_h = 8 * s
@@ -70,64 +102,7 @@ class Dashboard:
                     gfx.GREEN if level > 1 else gfx.AMBER, gfx.DARK)
 
         p.hline(pad, self.head_h, self.w - 2 * pad, gfx.DARK)
-
-    # --------------------------------------------------------------- value --
-    def _value(self, p, quote):
-        pad = self.pad
-        rate = quote.get("rate") if quote else None
-        text = fx.format_rate(rate) if rate else "---.--"
-        width = p.seg(text, pad, self.y_big, self.h_big, gfx.CYAN, gfx.GHOST)
-
-        ux = pad + width + int(14 * self.k)
-        s = self.s_unit
-        if ux + gfx.text_width(self.quote, s) < self.w - pad:
-            p.text(self.quote, ux, self.y_big + self.h_big - 8 * s,
-                   gfx.WHITE, s)
-            label = "per 1 %s" % self.base
-            if gfx.text_width(label, 1) + ux < self.w - pad:
-                p.text(label, ux, self.y_big, gfx.GREY, 1)
-
-    def _change(self, p, quote):
-        pad = self.pad
-        s = self.s_body
-        change = quote.get("change") if quote else None
-        y = self.y_change
-        if change is None:
-            p.text("no previous close", pad, y, gfx.GREY, s)
-            return
-        up = change >= 0
-        color = gfx.GREEN if up else gfx.RED
-        size = 4 * s
-        if up:
-            p.triangle_up(pad, y + (8 * s - size) // 2, size, color)
-        else:
-            p.triangle_down(pad, y + (8 * s - size) // 2, size, color)
-        p.text(fx.format_change(quote), pad + 2 * size + int(6 * self.k), y,
-               color, s)
-
-    def _inverse(self, p, quote):
-        inverse = quote.get("inverse") if quote else None
-        if inverse is None:
-            return
-        text = "1 %s = %s %s" % (self.quote, fx.format_rate(inverse),
-                                 self.base)
-        p.text(text, self.pad, self.y_inverse, gfx.WHITE, self.s_body)
-
-    # ------------------------------------------------------------ sparkline --
-    def _spark(self, p, quote):
-        series = (quote or {}).get("series") or []
-        pad = self.pad
-        x = pad
-        w = self.w - 2 * pad
-        if len(series) < 2:
-            p.hline(x, self.y_spark + self.h_spark - 1, w, gfx.DARK)
-            p.text("no history", x, self.y_spark + self.h_spark // 2 - 4,
-                   gfx.DARK, 1)
-            return
-        p.sparkline(x, self.y_spark, w, self.h_spark, series, gfx.BLUE,
-                    gfx.DARK, gfx.CYAN)
-        days = "%dd" % len(series)
-        p.text(days, x, self.y_spark - 9, gfx.GREY, 1)
+        return dots_x + dots_w
 
     # --------------------------------------------------------------- footer --
     def _footer(self, p, state, quote):
@@ -168,10 +143,7 @@ class Dashboard:
     def draw(self, p, state):
         quote = state.get("quote")
         self._header(p, state)
-        self._value(p, quote)
-        self._change(p, quote)
-        self._inverse(p, quote)
-        self._spark(p, quote)
+        self.trade.draw(p, quote)
         self._footer(p, state, quote)
 
     def splash(self, p, title, message=""):
