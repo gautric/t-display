@@ -55,6 +55,17 @@ REFRESH_SECONDS = 300
 RETRY_SECONDS = 30  # after a failed fetch
 TICK_SECONDS = 5  # screen repaint interval (clock / countdown)
 
+# --------------------------------------------------------------- netinfo ----
+# One extra menu entry after the pairs, showing the public IP address of the
+# board plus the city, country and coordinates ipinfo.io infers from it. False
+# keeps the menu pairs-only and leaves netview/ipinfo unimported.
+SHOW_NETINFO = True
+IPINFO_URL = "https://ipinfo.io/json"
+
+# ipinfo.io throttles anonymous callers, and the answer only changes when the
+# ISP hands out a new address, so this view polls far slower than the quote.
+NETINFO_SECONDS = 900
+
 # --------------------------------------------------------------- logging ----
 # DEBUG / INFO / WARN / ERROR / OFF. `make debug` forces DEBUG without editing
 # this file. DEBUG adds per-request and per-frame timings plus heap usage.

@@ -35,6 +35,14 @@ def text_width(s, scale=1):
     return 8 * scale * len(s)
 
 
+def clip_text(text, limit):
+    """Shorten text to limit characters, marking the cut with a tilde."""
+    text = str(text)
+    if limit <= 0:
+        return ""
+    return text if len(text) <= limit else text[:limit - 1] + "~"
+
+
 def text_scaled(fb, s, x, y, color, scale=1):
     """Draw the built-in 8x8 font scaled by an integer factor.
 
@@ -191,6 +199,23 @@ def triangle_up(fb, x, y, size, color):
 def triangle_down(fb, x, y, size, color):
     for i in range(size):
         fb.hline(x + i, y + i, 2 * (size - i) - 1, color)
+
+
+def pin(fb, x, y, size, color):
+    """Map marker: a blunt round head above a point.
+
+    size is the head radius; the glyph occupies 2*size-1 by 3*size-1 pixels
+    from (x, y), the same top-left convention as the triangles. Returns the
+    width consumed so a caller can place a label next to it.
+    """
+    d = 2 * size - 1
+    # two overlapping rects read as a circle from three pixels away and cost
+    # two fill_rect calls instead of a per-pixel loop
+    fb.fill_rect(x + 1, y, d - 2, d, color)
+    fb.fill_rect(x, y + 1, d, d - 2, color)
+    for i in range(size):
+        fb.hline(x + i, y + d + i, d - 2 * i, color)
+    return d
 
 
 def wifi_bars(fb, x, y, h, level, on_color, off_color):

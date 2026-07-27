@@ -1,7 +1,8 @@
 """EUR/JPY dashboard for the LilyGO T-Display S3 family.
 
-Left button  (GPIO0 / BOOT) : refresh, moving to the next pair in config.PAIRS
-                              (EUR/USD -> EUR/JPY -> ...)
+Left button  (GPIO0 / BOOT) : refresh, moving to the next menu entry - every
+                              pair in config.PAIRS, then the network view
+                              (EUR/USD -> EUR/JPY -> NETWORK -> ...)
 Right button (GPIO21 or 14) : cycle brightness
 
 Progress is logged to the USB serial console; watch it with `make monitor`, or
@@ -16,39 +17,48 @@ from machine import Pin
 import config
 import fx
 import httpget
+import ipinfo
 import log
 import wifi
 from screen import Screen, make_display, buttons
-from ui import Dashboard
+from ui import Chrome, VIEW_FX, VIEW_NET
 
 TAG = "main"
 BRIGHTNESS_STEPS = (0xFF, 0xD0, 0x80, 0x30, 0x08)
 
 
 def _menu():
-    """The pair menu, normalised to a tuple of (base, quote)."""
+    """The menu the left button walks: every pair, then the network view.
+
+    Entries are (view, base, quote); a view that is not a pair leaves the two
+    currency slots empty.
+    """
     pairs = getattr(config, "PAIRS", None) or ((config.BASE, config.QUOTE),)
-    return tuple((str(b).upper(), str(q).upper()) for b, q in pairs)
+    entries = [(VIEW_FX, str(b).upper(), str(q).upper()) for b, q in pairs]
+    if getattr(config, "SHOW_NETINFO", True):
+        entries.append((VIEW_NET, "", ""))
+    return tuple(entries)
 
 
 def _start_index(menu):
     """Boot on config.BASE/QUOTE when the menu lists it, else on the first."""
     try:
-        return menu.index((config.BASE.upper(), config.QUOTE.upper()))
+        return menu.index((VIEW_FX, config.BASE.upper(),
+                           config.QUOTE.upper()))
     except ValueError:
         return 0
 
 
-def _pair(state=None):
-    """'EUR/JPY' for the selected pair, or for the configured default."""
-    if state:
-        return "%s/%s" % (state["base"], state["quote_ccy"])
-    return "%s/%s" % (config.BASE, config.QUOTE)
+def _label(entry):
+    """'EUR/JPY' for a pair entry, 'NETWORK' for the ipinfo view."""
+    if entry[0] == VIEW_NET:
+        return "NETWORK"
+    return "%s/%s" % (entry[1], entry[2])
 
 
 def _banner(menu, index):
-    log.info(TAG, "%s/%s dashboard starting, log level %s", menu[index][0],
-             menu[index][1], log.level_name())
+    log.info(TAG, "%s dashboard starting, log level %s", _label(menu[index]),
+             log.level_name())
     try:
         import os
         uname = os.uname()
@@ -58,16 +68,73 @@ def _banner(menu, index):
         pass
     log.info(TAG, "board %s, rotation %d, refresh %ds", config.BOARD,
              config.ROTATION, config.REFRESH_SECONDS)
-    log.info(TAG, "pair menu: %s", ", ".join("%s/%s" % p for p in menu))
+    log.info(TAG, "menu: %s", ", ".join(_label(e) for e in menu))
     log.mem(TAG, "at boot")
 
 
+def _view(views, chrome, entry):
+    """The dashboard for a menu entry, built on first use and then cached.
+
+    The import is lazy so a board that never opens a view pays neither the
+    import nor the object. Never called from a render callback.
+    """
+    kind = entry[0]
+    view = views.get(kind)
+    if view is None:
+        if kind == VIEW_NET:
+            from netui import NetDashboard
+            view = NetDashboard(chrome)
+        else:
+            from tradeui import TradeDashboard
+            view = TradeDashboard(chrome, entry[1], entry[2])
+        views[kind] = view
+        log.debug(TAG, "built the %s view", kind)
+    return view
+
+
+def _select(state, chrome, views, menu, index):
+    """Apply a menu entry, returning the dashboard that renders it."""
+    kind, base, quote_ccy = menu[index]
+    state["view"] = kind
+    state["error"] = None
+    chrome.set_menu(index, len(menu))
+    view = _view(views, chrome, menu[index])
+    if kind == VIEW_FX and (base != state["base"]
+                            or quote_ccy != state["quote_ccy"]):
+        state["base"] = base
+        state["quote_ccy"] = quote_ccy
+        # drop the previous pair's numbers, they no longer match the header,
+        # the next cycle repopulates them
+        state["quote"] = None
+        view.set_pair(base, quote_ccy)
+    return view
+
+
+def _period(state):
+    """Milliseconds until the next fetch for the selected view.
+
+    ipinfo.io throttles anonymous callers and its answer only moves when the
+    ISP hands out a new address, so the network view polls far slower than a
+    quote does.
+    """
+    if state["view"] == VIEW_NET:
+        return getattr(config, "NETINFO_SECONDS", 900) * 1000
+    return config.REFRESH_SECONDS * 1000
+
+
 def _fetch(state):
+    """Refresh the data behind the selected view in place."""
+    wifi.ensure(config.WIFI_SSID, config.WIFI_PASSWORD, config.WIFI_TIMEOUT,
+                config.WIFI_HOSTNAME)
+    if state["view"] == VIEW_NET:
+        return _fetch_net(state)
+    return _fetch_quote(state)
+
+
+def _fetch_quote(state):
     """Refresh the quote of the selected pair in place."""
     base = state["base"]
     quote_ccy = state["quote_ccy"]
-    wifi.ensure(config.WIFI_SSID, config.WIFI_PASSWORD, config.WIFI_TIMEOUT,
-                config.WIFI_HOSTNAME)
     quote = fx.fetch(httpget.get_json, base, quote_ccy, config.HISTORY_DAYS)
     state["quote"] = quote
     state["error"] = None
@@ -78,23 +145,39 @@ def _fetch(state):
     return quote
 
 
+def _fetch_net(state):
+    """Refresh the public address and its location in place."""
+    info = ipinfo.fetch(httpget.get_json,
+                        getattr(config, "IPINFO_URL", ipinfo.URL))
+    state["net"] = info
+    state["error"] = None
+    log.info(TAG, "public ip %s, %s %s, %s", info["ip"],
+             ipinfo.format_place(info) or "unknown city",
+             info["country"] or "??",
+             ipinfo.format_coords(info) or "no coordinates")
+    return info
+
+
 def main():
     log.configure(config.LOG_LEVEL)
     menu = _menu()
     index = _start_index(menu)
-    base, quote_ccy = menu[index]
+    view, base, quote_ccy = menu[index]
     _banner(menu, index)
 
     display = make_display(config)
     screen = Screen(display, config.BAND_HEIGHT)
-    dash = Dashboard(screen.width, screen.height, base, quote_ccy,
-                     config.TZ_OFFSET, len(menu), index)
-    state = {"quote": None, "error": None, "ip": None, "rssi": None,
-             "refresh_fraction": 0.0, "base": base, "quote_ccy": quote_ccy}
+    chrome = Chrome(screen.width, screen.height, config.TZ_OFFSET, len(menu),
+                    index)
+    views = {}
+    dash = _view(views, chrome, menu[index])
+    state = {"quote": None, "net": None, "error": None, "ip": None,
+             "rssi": None, "refresh_fraction": 0.0, "base": base,
+             "quote_ccy": quote_ccy, "view": view}
     log.mem(TAG, "after display init")
 
-    screen.render(lambda p: dash.splash(p, _pair(state),
-                                       "joining %s" % config.WIFI_SSID))
+    screen.render(lambda p: chrome.splash(p, _label(menu[index]),
+                                         "joining %s" % config.WIFI_SSID))
     try:
         wifi.connect(config.WIFI_SSID, config.WIFI_PASSWORD,
                      config.WIFI_TIMEOUT, config.WIFI_HOSTNAME)
@@ -104,7 +187,7 @@ def main():
                       config.WIFI_SSID)
 
     if wifi.isconnected():
-        screen.render(lambda p: dash.splash(p, "clock", config.NTP_HOST))
+        screen.render(lambda p: chrome.splash(p, "clock", config.NTP_HOST))
         if not wifi.sync_time(config.NTP_HOST):
             log.warn(TAG, "clock not set, history and the on-screen time are "
                           "unavailable")
@@ -123,7 +206,7 @@ def main():
         wdt = WDT(timeout=config.WATCHDOG_TIMEOUT * 1000)
         log.info(TAG, "watchdog armed at %ds", config.WATCHDOG_TIMEOUT)
 
-    period = config.REFRESH_SECONDS * 1000
+    period = _period(state)
     due = time.ticks_ms()
     started = due
     cycle = 0
@@ -131,11 +214,11 @@ def main():
     while True:
         if time.ticks_diff(time.ticks_ms(), due) >= 0:
             cycle += 1
-            log.debug(TAG, "refresh cycle %d, %s", cycle, _pair(state))
+            log.debug(TAG, "refresh cycle %d, %s", cycle, _label(menu[index]))
             screen.render(lambda p: dash.draw(p, _busy(state)))
             try:
                 _fetch(state)
-                period = config.REFRESH_SECONDS * 1000
+                period = _period(state)
             except Exception as exc:
                 state["error"] = repr(exc)
                 period = config.RETRY_SECONDS * 1000
@@ -156,15 +239,9 @@ def main():
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             if not key_a.value():
                 index = (index + 1) % len(menu)
-                state["base"], state["quote_ccy"] = menu[index]
-                dash.set_pair(state["base"], state["quote_ccy"], index,
-                              len(menu))
-                # drop the previous pair's numbers, they no longer match the
-                # header, the next cycle repopulates them
-                state["quote"] = None
-                state["error"] = None
-                log.info(TAG, "refresh button pressed, pair %d/%d is now %s",
-                         index + 1, len(menu), _pair(state))
+                dash = _select(state, chrome, views, menu, index)
+                log.info(TAG, "refresh button pressed, menu %d/%d is now %s",
+                         index + 1, len(menu), _label(menu[index]))
                 due = time.ticks_ms()
                 while not key_a.value():
                     time.sleep_ms(20)

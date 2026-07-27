@@ -94,6 +94,9 @@ class Painter:
     def triangle_down(self, x, y, size, c):
         gfx.triangle_down(self.fb, x, y + self.dy, size, c)
 
+    def pin(self, x, y, size, c):
+        return gfx.pin(self.fb, x, y + self.dy, size, c)
+
     def wifi_bars(self, x, y, h, level, on_color, off_color):
         return gfx.wifi_bars(self.fb, x, y + self.dy, h, level, on_color,
                              off_color)
