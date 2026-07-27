@@ -1,0 +1,55 @@
+"""Dashboard configuration.
+
+Everything that is not a secret lives here. Wi-Fi credentials come from
+secrets.py (git-ignored) so they never end up in version control.
+"""
+
+try:
+    from secrets import WIFI_SSID, WIFI_PASSWORD
+except ImportError:  # board flashed without secrets.py
+    WIFI_SSID = ""
+    WIFI_PASSWORD = ""
+
+# ---------------------------------------------------------------- board -----
+# "amoled" -> LilyGO T-Display-S3 AMOLED, RM67162, 536x240 (default)
+# "lcd"    -> LilyGO T-Display-S3,       ST7789,  170x320 8-bit parallel
+BOARD = "amoled"
+
+# 0/2 = portrait, 1/3 = landscape
+ROTATION = 1
+
+# 0..255. AMOLED drives the panel register, LCD dims the backlight with PWM.
+BRIGHTNESS = 0xD0
+
+# RM67162 is routed through the GPIO matrix, so 40 MHz is the safe ceiling.
+SPI_BAUDRATE = 40_000_000
+
+# Height in pixels of the reusable render band. The screen is painted band by
+# band so we never allocate a full frame buffer (536*240*2 = 251 kB).
+# 48 rows on the AMOLED is ~50 kB.
+BAND_HEIGHT = 48
+
+# --------------------------------------------------------------- network ----
+WIFI_HOSTNAME = "t-display-fx"
+WIFI_TIMEOUT = 25  # seconds
+NTP_HOST = "pool.ntp.org"
+TZ_OFFSET = 2 * 3600  # displayed clock offset from UTC (Europe/Paris summer)
+
+# ------------------------------------------------------------------- fx -----
+# Displayed as BASE/QUOTE, e.g. EUR/JPY = "1 EUR costs N JPY".
+BASE = "EUR"
+QUOTE = "USD"
+
+HISTORY_DAYS = 45  # window requested for the sparkline
+REFRESH_SECONDS = 300  # ECB publishes once a day, 5 min is plenty
+RETRY_SECONDS = 30  # after a failed fetch
+TICK_SECONDS = 5  # screen repaint interval (clock / countdown)
+
+# --------------------------------------------------------------- logging ----
+# DEBUG / INFO / WARN / ERROR / OFF. `make debug` forces DEBUG without editing
+# this file. DEBUG adds per-request and per-frame timings plus heap usage.
+LOG_LEVEL = "INFO"
+
+# --------------------------------------------------------------- runtime ----
+USE_WATCHDOG = False
+WATCHDOG_TIMEOUT = 120  # seconds, only used when USE_WATCHDOG is True
