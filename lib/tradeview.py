@@ -9,6 +9,10 @@ view owns the vertical band between the header and the footer:
     inverse              the same rate the other way round
     sparkline            the history window returned by fx.fetch()
 
+The rate and the change line share one colour so the readout cannot contradict
+itself: white when the rate is unchanged (or no previous close is known), green
+when it moved up, red when it moved down.
+
 Geometry is derived from the panel height, so the same code fits the 536x240
 AMOLED and the 320x170 LCD. Coordinates are screen-absolute; the Painter
 handed to draw() applies the band offset.
@@ -48,12 +52,21 @@ class TradeView:
     def pair(self):
         return "%s/%s" % (self.base, self.quote)
 
+    # -------------------------------------------------------------- colour --
+    def _trend_color(self, quote):
+        """White when flat or unknown, green when up, red when down."""
+        change = quote.get("change") if quote else None
+        if not change:  # None or exactly 0.0
+            return gfx.WHITE
+        return gfx.GREEN if change > 0 else gfx.RED
+
     # --------------------------------------------------------------- value --
     def _value(self, p, quote):
         pad = self.pad
         rate = quote.get("rate") if quote else None
         text = fx.format_rate(rate) if rate else "---.--"
-        width = p.seg(text, pad, self.y_big, self.h_big, gfx.CYAN, gfx.GHOST)
+        width = p.seg(text, pad, self.y_big, self.h_big,
+                      self._trend_color(quote), gfx.GHOST)
 
         ux = pad + width + int(14 * self.k)
         s = self.s_unit
@@ -72,12 +85,13 @@ class TradeView:
         if change is None:
             p.text("no previous close", pad, y, gfx.GREY, s)
             return
-        up = change >= 0
-        color = gfx.GREEN if up else gfx.RED
+        color = self._trend_color(quote)
         size = 4 * s
-        if up:
+        # a flat rate gets no arrow, otherwise white digits next to a green
+        # triangle would read as a move
+        if change > 0:
             p.triangle_up(pad, y + (8 * s - size) // 2, size, color)
-        else:
+        elif change < 0:
             p.triangle_down(pad, y + (8 * s - size) // 2, size, color)
         p.text(fx.format_change(quote), pad + 2 * size + int(6 * self.k), y,
                color, s)

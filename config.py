@@ -49,7 +49,9 @@ PAIRS = (
 )
 
 HISTORY_DAYS = 45  # window requested for the sparkline
-REFRESH_SECONDS = 300  # ECB publishes once a day, 5 min is plenty
+# ECB publishes once a day around 16:00 CET, so half an hour between fetches
+# still catches the new rate quickly while keeping the API traffic low.
+REFRESH_SECONDS = 300
 RETRY_SECONDS = 30  # after a failed fetch
 TICK_SECONDS = 5  # screen repaint interval (clock / countdown)
 
