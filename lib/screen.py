@@ -97,6 +97,15 @@ class Painter:
     def pin(self, x, y, size, c):
         return gfx.pin(self.fb, x, y + self.dy, size, c)
 
+    def circle(self, cx, cy, r, c):
+        gfx.circle(self.fb, cx, cy + self.dy, r, c)
+
+    def disc(self, cx, cy, r, c):
+        gfx.disc(self.fb, cx, cy + self.dy, r, c)
+
+    def radial(self, cx, cy, step, r0, r1, c, weight=1):
+        gfx.radial(self.fb, cx, cy + self.dy, step, r0, r1, c, weight)
+
     def wifi_bars(self, x, y, h, level, on_color, off_color):
         return gfx.wifi_bars(self.fb, x, y + self.dy, h, level, on_color,
                              off_color)

@@ -8,6 +8,9 @@ the byte-swapped value, so a framebuf can be blitted to the panel with no
 per-pixel fixup.
 """
 
+import math
+from array import array
+
 import framebuf
 from micropython import const
 
@@ -226,6 +229,79 @@ def wifi_bars(fb, x, y, h, level, on_color, off_color):
         fb.fill_rect(x + i * (bw + 1), y + h - bh, bw, bh,
                      on_color if i < level else off_color)
     return 4 * (bw + 1)
+
+
+# ------------------------------------------------------------------ dials ---
+# A clock dial only ever needs 60 directions, so the sines are precomputed once
+# in 12.12 fixed point instead of calling math per tick per band. 240 bytes
+# buys us an integer-only radial(), which the render callback can afford.
+_UNIT = const(4096)
+_STEPS = const(60)
+_SIN = array("i", [int(round(_UNIT * math.sin(i * math.pi / 30)))
+                   for i in range(_STEPS)])
+
+# Stroke weight is a dilation: the line is redrawn at these offsets. Doing it
+# this way keeps the widening exact in every direction, where offsetting along
+# the perpendicular would collapse to nothing on the diagonals.
+_DILATE = ((0, 0), (1, 0), (0, 1), (-1, 0), (0, -1), (1, 1), (-1, -1),
+           (1, -1), (-1, 1))
+_WEIGHTS = (1, 3, 5, 9)
+
+
+def circle(fb, cx, cy, r, color):
+    """Midpoint circle outline, one pixel thick."""
+    if r < 1:
+        fb.pixel(cx, cy, color)
+        return
+    x = r
+    y = 0
+    err = 1 - r
+    while x >= y:
+        fb.pixel(cx + x, cy + y, color)
+        fb.pixel(cx - x, cy + y, color)
+        fb.pixel(cx + x, cy - y, color)
+        fb.pixel(cx - x, cy - y, color)
+        fb.pixel(cx + y, cy + x, color)
+        fb.pixel(cx - y, cy + x, color)
+        fb.pixel(cx + y, cy - x, color)
+        fb.pixel(cx - y, cy - x, color)
+        y += 1
+        if err < 0:
+            err += 2 * y + 1
+        else:
+            x -= 1
+            err += 2 * (y - x) + 1
+
+
+def disc(fb, cx, cy, r, color):
+    """Filled circle, drawn as one hline per row."""
+    if r < 1:
+        fb.pixel(cx, cy, color)
+        return
+    rr = r * r
+    for dy in range(-r, r + 1):
+        dx = int((rr - dy * dy) ** 0.5)
+        fb.hline(cx - dx, cy + dy, 2 * dx + 1, color)
+
+
+def radial(fb, cx, cy, step, r0, r1, color, weight=1):
+    """Draw a spoke of the dial from radius r0 to r1.
+
+    step is a 60ths-of-a-turn angle, 0 at 12 o'clock and increasing clockwise,
+    so a minute or a second can be passed straight in. r0 may be negative,
+    which puts a counterweight on the far side of the centre. weight 1..4
+    thickens the stroke.
+    """
+    dx = _SIN[step % _STEPS]
+    dy = -_SIN[(step + 15) % _STEPS]
+    x0 = cx + r0 * dx // _UNIT
+    y0 = cy + r0 * dy // _UNIT
+    x1 = cx + r1 * dx // _UNIT
+    y1 = cy + r1 * dy // _UNIT
+    n = _WEIGHTS[max(1, min(len(_WEIGHTS), weight)) - 1]
+    for i in range(n):
+        ox, oy = _DILATE[i]
+        fb.line(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color)
 
 
 def rssi_level(rssi):

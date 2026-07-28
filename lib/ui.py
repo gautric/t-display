@@ -4,8 +4,10 @@ What fills the band between the header and the footer is not this module's
 business. Every menu entry has its own view module, which pairs this chrome
 with exactly one panel:
 
-    tradeui.TradeDashboard -> tradeview.TradeView   one currency pair
-    netui.NetDashboard     -> netview.NetView       the ipinfo.io lookup
+    tradeui.TradeDashboard -> tradeview.TradeView    one currency pair
+    netui.NetDashboard     -> netview.NetView        the ipinfo.io lookup
+    clockui.AnalogDashboard  -> clockview.AnalogView   the dial
+    clockui.DigitalDashboard -> clockview.DigitalView  the big readout
 
 Keeping them in separate files means a board that never opens the network view
 never imports it, and a new view is a new file instead of another branch in
@@ -26,6 +28,8 @@ _UNSET = "--:--"
 # per entry and each kind maps to one view module.
 VIEW_FX = "fx"
 VIEW_NET = "net"
+VIEW_ANALOG = "analog"
+VIEW_DIGITAL = "digital"
 
 
 class Chrome:
@@ -55,8 +59,15 @@ class Chrome:
     def _right(self, text, scale):
         return self.w - self.pad - gfx.text_width(text, scale)
 
-    def _clock(self):
-        now = time.time()
+    def _clock(self, state):
+        """HH:MM of the epoch main.py sampled for this frame.
+
+        Reading state instead of the RTC keeps every band of the same frame on
+        the same second, which matters once a view draws seconds.
+        """
+        now = state.get("now")
+        if now is None:
+            now = time.time()
         if not fx.clock_is_set(now):
             return _UNSET
         tm = time.localtime(now + self.tz)
@@ -92,7 +103,7 @@ class Chrome:
         dots_x = pad + gfx.text_width(title, s) + int(10 * self.k)
         dots_w = self._menu_dots(p, dots_x, ty + 4 * s - max(2, int(3 * self.k)))
 
-        clock = self._clock()
+        clock = self._clock(state)
         cx = self._right(clock, s)
         p.text(clock, cx, ty, gfx.GREY, s)
 
@@ -176,12 +187,17 @@ class View:
         """The entry of the state dict this view renders."""
         return None
 
-    def panel(self, p, data):
-        """Fill the band between the header and the footer."""
+    def panel(self, p, data, state):
+        """Fill the band between the header and the footer.
+
+        data is this view's slice of the state dict; the whole state comes
+        along for views that also need something outside their slice, such as
+        the epoch a clock draws.
+        """
         raise NotImplementedError
 
     def draw(self, p, state):
         data = self.data(state)
-        self.panel(p, data)
+        self.panel(p, data, state)
         self.chrome.header(p, self.title(), state)
         self.chrome.footer(p, state, data)

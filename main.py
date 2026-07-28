@@ -1,8 +1,10 @@
 """EUR/JPY dashboard for the LilyGO T-Display S3 family.
 
 Left button  (GPIO0 / BOOT) : refresh, moving to the next menu entry - every
-                              pair in config.PAIRS, then the network view
-                              (EUR/USD -> EUR/JPY -> NETWORK -> ...)
+                              pair in config.PAIRS, then the network view, then
+                              the two clocks
+                              (EUR/USD -> EUR/JPY -> NETWORK -> ANALOG ->
+                               DIGITAL -> ...)
 Right button (GPIO21 or 14) : cycle brightness
 
 Progress is logged to the USB serial console; watch it with `make monitor`, or
@@ -21,14 +23,21 @@ import ipinfo
 import log
 import wifi
 from screen import Screen, make_display, buttons
-from ui import Chrome, VIEW_FX, VIEW_NET
+from ui import Chrome, VIEW_FX, VIEW_NET, VIEW_ANALOG, VIEW_DIGITAL
 
 TAG = "main"
 BRIGHTNESS_STEPS = (0xFF, 0xD0, 0x80, 0x30, 0x08)
 
+# views that show the time instead of fetched data: no quote to poll, but they
+# repaint every second and re-sync the RTC now and then
+_CLOCKS = (VIEW_ANALOG, VIEW_DIGITAL)
+
+_LABELS = {VIEW_NET: "NETWORK", VIEW_ANALOG: "ANALOG",
+           VIEW_DIGITAL: "DIGITAL"}
+
 
 def _menu():
-    """The menu the left button walks: every pair, then the network view.
+    """The menu the left button walks: pairs, network view, then the clocks.
 
     Entries are (view, base, quote); a view that is not a pair leaves the two
     currency slots empty.
@@ -37,6 +46,9 @@ def _menu():
     entries = [(VIEW_FX, str(b).upper(), str(q).upper()) for b, q in pairs]
     if getattr(config, "SHOW_NETINFO", True):
         entries.append((VIEW_NET, "", ""))
+    if getattr(config, "SHOW_CLOCKS", True):
+        entries.append((VIEW_ANALOG, "", ""))
+        entries.append((VIEW_DIGITAL, "", ""))
     return tuple(entries)
 
 
@@ -50,10 +62,10 @@ def _start_index(menu):
 
 
 def _label(entry):
-    """'EUR/JPY' for a pair entry, 'NETWORK' for the ipinfo view."""
-    if entry[0] == VIEW_NET:
-        return "NETWORK"
-    return "%s/%s" % (entry[1], entry[2])
+    """'EUR/JPY' for a pair entry, the view name for everything else."""
+    if entry[0] == VIEW_FX:
+        return "%s/%s" % (entry[1], entry[2])
+    return _LABELS.get(entry[0], entry[0].upper())
 
 
 def _banner(menu, index):
@@ -84,6 +96,14 @@ def _view(views, chrome, entry):
         if kind == VIEW_NET:
             from netui import NetDashboard
             view = NetDashboard(chrome)
+        elif kind in _CLOCKS:
+            seconds = getattr(config, "SHOW_SECONDS", True)
+            if kind == VIEW_ANALOG:
+                from clockui import AnalogDashboard
+                view = AnalogDashboard(chrome, seconds)
+            else:
+                from clockui import DigitalDashboard
+                view = DigitalDashboard(chrome, seconds)
         else:
             from tradeui import TradeDashboard
             view = TradeDashboard(chrome, entry[1], entry[2])
@@ -115,19 +135,37 @@ def _period(state):
 
     ipinfo.io throttles anonymous callers and its answer only moves when the
     ISP hands out a new address, so the network view polls far slower than a
-    quote does.
+    quote does. A clock view fetches nothing at all; its cycle is just the NTP
+    re-sync, slower still.
     """
-    if state["view"] == VIEW_NET:
+    view = state["view"]
+    if view == VIEW_NET:
         return getattr(config, "NETINFO_SECONDS", 900) * 1000
+    if view in _CLOCKS:
+        return getattr(config, "CLOCK_SYNC_SECONDS", 3600) * 1000
     return config.REFRESH_SECONDS * 1000
+
+
+def _tick(state):
+    """Milliseconds between repaints of the selected view.
+
+    The clocks sweep a second hand, so they need a one second beat. The data
+    views only move when the countdown hairline does.
+    """
+    if state["view"] in _CLOCKS:
+        return getattr(config, "CLOCK_TICK_SECONDS", 1) * 1000
+    return config.TICK_SECONDS * 1000
 
 
 def _fetch(state):
     """Refresh the data behind the selected view in place."""
     wifi.ensure(config.WIFI_SSID, config.WIFI_PASSWORD, config.WIFI_TIMEOUT,
                 config.WIFI_HOSTNAME)
-    if state["view"] == VIEW_NET:
+    view = state["view"]
+    if view == VIEW_NET:
         return _fetch_net(state)
+    if view in _CLOCKS:
+        return _fetch_clock(state)
     return _fetch_quote(state)
 
 
@@ -158,6 +196,28 @@ def _fetch_net(state):
     return info
 
 
+def _fetch_clock(state):
+    """Re-sync the RTC so the clock views stay honest.
+
+    A failed sync is only fatal while the clock has never been set: the views
+    have nothing to show then, so raise and let the caller retry soon. Once the
+    time is known a miss costs a few seconds of drift, not the screen.
+    """
+    host = config.NTP_HOST
+    ok = wifi.sync_time(host)
+    if not ok and not fx.clock_is_set():
+        raise OSError("ntp %s did not answer, clock still unset" % host)
+    tm = time.localtime(time.time() + config.TZ_OFFSET)
+    info = {"source": "ntp %s" % host,
+            "date": "synced %02d:%02d" % (tm[3], tm[4]) if ok else "drifting"}
+    state["clock"] = info
+    state["error"] = None
+    log.info(TAG, "clock %s, local time %02d:%02d:%02d",
+             "synced with %s" % host if ok else "not synced, using the RTC",
+             tm[3], tm[4], tm[5])
+    return info
+
+
 def main():
     log.configure(config.LOG_LEVEL)
     menu = _menu()
@@ -171,9 +231,11 @@ def main():
                     index)
     views = {}
     dash = _view(views, chrome, menu[index])
-    state = {"quote": None, "net": None, "error": None, "ip": None,
-             "rssi": None, "refresh_fraction": 0.0, "base": base,
-             "quote_ccy": quote_ccy, "view": view}
+    # "now" is the epoch every band of a frame shares, so the header clock and
+    # a sweeping second hand cannot disagree halfway down the screen
+    state = {"quote": None, "net": None, "clock": None, "error": None,
+             "ip": None, "rssi": None, "refresh_fraction": 0.0, "base": base,
+             "quote_ccy": quote_ccy, "view": view, "now": time.time()}
     log.mem(TAG, "after display init")
 
     screen.render(lambda p: chrome.splash(p, _label(menu[index]),
@@ -209,9 +271,11 @@ def main():
     period = _period(state)
     due = time.ticks_ms()
     started = due
+    deadline = due
     cycle = 0
 
     while True:
+        state["now"] = time.time()
         if time.ticks_diff(time.ticks_ms(), due) >= 0:
             cycle += 1
             log.debug(TAG, "refresh cycle %d, %s", cycle, _label(menu[index]))
@@ -235,7 +299,12 @@ def main():
         state["refresh_fraction"] = 1.0 - min(1.0, elapsed / period)
         screen.render(lambda p: dash.draw(p, state))
 
-        deadline = time.ticks_add(time.ticks_ms(), config.TICK_SECONDS * 1000)
+        # Beat from the previous deadline, not from the end of the render: a
+        # 50 ms frame on a 1 s tick would otherwise run slow enough to make the
+        # second hand skip. Re-base when a fetch or a button push overran it.
+        deadline = time.ticks_add(deadline, _tick(state))
+        if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+            deadline = time.ticks_add(time.ticks_ms(), _tick(state))
         while time.ticks_diff(deadline, time.ticks_ms()) > 0:
             if not key_a.value():
                 index = (index + 1) % len(menu)

@@ -25,5 +25,5 @@ class NetDashboard(View):
     def data(self, state):
         return state.get("net")
 
-    def panel(self, p, data):
+    def panel(self, p, data, state):
         self.net.draw(p, data)

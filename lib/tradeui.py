@@ -34,5 +34,5 @@ class TradeDashboard(View):
     def data(self, state):
         return state.get("quote")
 
-    def panel(self, p, data):
+    def panel(self, p, data, state):
         self.trade.draw(p, data)

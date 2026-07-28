@@ -66,6 +66,24 @@ IPINFO_URL = "https://ipinfo.io/json"
 # ISP hands out a new address, so this view polls far slower than the quote.
 NETINFO_SECONDS = 900
 
+# ----------------------------------------------------------------- clock ----
+# Two more menu entries after the network view: an analog dial and a big
+# digital readout, both on local time (TZ_OFFSET). False keeps them out of the
+# menu and leaves clockui/clockview unimported.
+SHOW_CLOCKS = True
+
+# The clock views repaint on their own beat so the second hand actually sweeps;
+# TICK_SECONDS (5 s) would make it jump. Costs one banded frame per second,
+# which is ~30 ms of the second on the AMOLED.
+CLOCK_TICK_SECONDS = 1
+
+# How often a clock view re-syncs the RTC over NTP. The ESP32 RTC drifts a few
+# seconds a day, so hourly is plenty and keeps the pool traffic polite.
+CLOCK_SYNC_SECONDS = 3600
+
+# False drops the second hand and the seconds digits, leaving hours/minutes.
+SHOW_SECONDS = True
+
 # --------------------------------------------------------------- logging ----
 # DEBUG / INFO / WARN / ERROR / OFF. `make debug` forces DEBUG without editing
 # this file. DEBUG adds per-request and per-frame timings plus heap usage.
